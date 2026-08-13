@@ -7,6 +7,7 @@
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_download
+// @downloadURL  https://github.com/Iwqndr/tampermonkey-scripts/raw/refs/heads/main/spoofer.user.js
 // @run-at       document-start
 // ==/UserScript==
 
