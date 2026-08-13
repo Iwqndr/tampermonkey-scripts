@@ -1,11 +1,9 @@
 // ==UserScript==
 // @name         Roblox Portable
 // @namespace    http://tampermonkey.net/
-// @version      1.0
-// @description  Portable Robux Spoofer - Just the balance
+// @version      1.2
+// @description  Portable Robux Spoofer - Reads public GitHub JSON
 // @match        https://*.roblox.com/*
-// @grant        GM_setValue
-// @grant        GM_getValue
 // @grant        GM_xmlhttpRequest
 // @downloadURL  https://github.com/Iwqndr/tampermonkey-scripts/raw/refs/heads/main/portable.user.js
 // @run-at       document-start
@@ -14,14 +12,10 @@
 (function() {
     'use strict';
 
-    // ===== GITHUB SYNC CONFIG =====
-    // Change this to match your main script's repo
-    const GITHUB_TOKEN = 'YOUR_GITHUB_TOKEN_HERE';
-    const GITHUB_REPO = 'Iwqndr/tampermonkey-scripts';
-    const GITHUB_FILE = 'robux_data.json';
-    const GITHUB_API = `https://api.github.com/repos/${GITHUB_REPO}/contents/${GITHUB_FILE}`;
+    // ===== PUBLIC GITHUB DATA =====
+    const DATA_URL = 'https://raw.githubusercontent.com/Iwqndr/tampermonkey-scripts/refs/heads/main/robux_data.json';
 
-    let fakeRobux = GM_getValue('savedRobux', 711);
+    let fakeRobux = 711;
     let lastUpdate = 0;
 
     // ===== FORMATTING =====
@@ -51,28 +45,26 @@
         return num.toLocaleString();
     }
 
-    // ===== GITHUB SYNC =====
-    function downloadFromGitHub() {
+    // ===== FETCH DATA FROM GITHUB =====
+    function fetchRobuxData() {
         GM_xmlhttpRequest({
             method: 'GET',
-            url: GITHUB_API,
-            headers: {
-                'Authorization': `token ${GITHUB_TOKEN}`,
-                'Accept': 'application/json'
-            },
+            url: DATA_URL,
             onload: function(response) {
                 if (response.status === 200) {
                     try {
                         const data = JSON.parse(response.responseText);
-                        const content = JSON.parse(decodeURIComponent(escape(atob(data.content))));
-                        
-                        if (content.fakeRobux !== undefined && content.fakeRobux !== fakeRobux) {
-                            fakeRobux = content.fakeRobux;
-                            GM_setValue('savedRobux', fakeRobux);
+                        if (data.fakeRobux !== undefined && data.fakeRobux !== fakeRobux) {
+                            fakeRobux = data.fakeRobux;
                             forceUpdate();
                         }
-                    } catch(e) {}
+                    } catch(e) {
+                        // Silent fail - keep current value
+                    }
                 }
+            },
+            onerror: function() {
+                // Silent fail - keep current value
             }
         });
     }
@@ -218,16 +210,20 @@
             setTimeout(forceUpdate, 200);
             setTimeout(forceUpdate, 500);
             setTimeout(forceUpdate, 1000);
+            // Fetch fresh data on navigation
+            setTimeout(fetchRobuxData, 100);
         }
     });
     navObserver.observe(document, { subtree: true, childList: true });
 
     function initialize() {
         startUpdating();
-        downloadFromGitHub();
-        setTimeout(downloadFromGitHub, 1000);
-        setTimeout(downloadFromGitHub, 3000);
-        setInterval(downloadFromGitHub, 5000); // Check for updates every 5 seconds
+        
+        // Fetch data on load
+        fetchRobuxData();
+        setTimeout(fetchRobuxData, 1000);
+        setTimeout(fetchRobuxData, 3000);
+        setInterval(fetchRobuxData, 10000); // Check every 10 seconds
 
         setTimeout(forceUpdate, 0);
         setTimeout(forceUpdate, 10);
