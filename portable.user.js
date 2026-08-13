@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Roblox Portable
 // @namespace    http://tampermonkey.net/
-// @version      1.3
-// @description  Portable Robux Spoofer - Reads public GitHub JSON
+// @version      1.4
+// @description  Portable Robux Spoofer - Full transaction support
 // @match        https://*.roblox.com/*
 // @grant        GM_xmlhttpRequest
 // @downloadURL  https://github.com/Iwqndr/tampermonkey-scripts/raw/refs/heads/main/portable.user.js
@@ -14,13 +14,14 @@
 
     console.log('[Portable] Script started');
 
-    // ===== PUBLIC GITHUB DATA =====
     const DATA_URL = 'https://raw.githubusercontent.com/Iwqndr/tampermonkey-scripts/refs/heads/main/robux_data.json';
 
     let fakeRobux = 711;
+    let currencyPurchases = 0;
+    let salesOfGoods = 1248;
+    let pendingRobux = 400;
     let lastUpdate = 0;
 
-    // ===== FORMATTING =====
     function formatShort(num) {
         if (num >= 1000000000000000) {
             const quadrillions = Math.floor(num / 1000000000000000);
@@ -47,36 +48,43 @@
         return num.toLocaleString();
     }
 
-    // ===== FETCH DATA FROM GITHUB =====
     function fetchRobuxData() {
         console.log('[Portable] Fetching data from GitHub...');
-        console.log('[Portable] URL:', DATA_URL);
         
         GM_xmlhttpRequest({
             method: 'GET',
             url: DATA_URL,
             onload: function(response) {
-                console.log('[Portable] Response status:', response.status);
-                console.log('[Portable] Response text:', response.responseText);
-                
                 if (response.status === 200) {
                     try {
                         const data = JSON.parse(response.responseText);
                         console.log('[Portable] Parsed data:', data);
                         
+                        let changed = false;
                         if (data.fakeRobux !== undefined && data.fakeRobux !== fakeRobux) {
-                            console.log('[Portable] Updating fakeRobux from', fakeRobux, 'to', data.fakeRobux);
                             fakeRobux = data.fakeRobux;
+                            changed = true;
+                        }
+                        if (data.currencyPurchases !== undefined && data.currencyPurchases !== currencyPurchases) {
+                            currencyPurchases = data.currencyPurchases;
+                            changed = true;
+                        }
+                        if (data.salesOfGoods !== undefined && data.salesOfGoods !== salesOfGoods) {
+                            salesOfGoods = data.salesOfGoods;
+                            changed = true;
+                        }
+                        if (data.pendingRobux !== undefined && data.pendingRobux !== pendingRobux) {
+                            pendingRobux = data.pendingRobux;
+                            changed = true;
+                        }
+                        
+                        if (changed) {
+                            console.log('[Portable] Data updated - fakeRobux:', fakeRobux, 'currencyPurchases:', currencyPurchases, 'salesOfGoods:', salesOfGoods, 'pendingRobux:', pendingRobux);
                             forceUpdate();
-                        } else {
-                            console.log('[Portable] fakeRobux unchanged:', fakeRobux);
                         }
                     } catch(e) {
                         console.error('[Portable] Failed to parse JSON:', e);
-                        console.error('[Portable] Response was:', response.responseText);
                     }
-                } else {
-                    console.error('[Portable] HTTP error:', response.status);
                 }
             },
             onerror: function(error) {
@@ -85,7 +93,6 @@
         });
     }
 
-    // ===== UPDATE FUNCTION =====
     function forceUpdate() {
         const now = Date.now();
         if (now - lastUpdate < 50) return;
@@ -93,22 +100,20 @@
 
         const formattedFull = formatFull(fakeRobux);
         const formattedShort = formatShort(fakeRobux);
+        const total = currencyPurchases + salesOfGoods;
 
-        console.log('[Portable] Updating displays to:', formattedFull, '(short:', formattedShort, ')');
+        console.log('[Portable] Updating displays - Balance:', formattedFull, 'Total:', formatFull(total));
 
         let updatedCount = 0;
 
-        // Nav bar
+        // ===== NAV BAR =====
         const navAmount = document.querySelector('#nav-robux-amount');
         if (navAmount) {
             const current = navAmount.textContent.trim();
             if (current !== formattedShort) {
-                console.log('[Portable] Updating nav-robux-amount:', current, '->', formattedShort);
                 navAmount.textContent = formattedShort;
                 updatedCount++;
             }
-        } else {
-            console.log('[Portable] nav-robux-amount not found');
         }
 
         const navIcon = document.querySelector('#nav-robux-icon');
@@ -117,7 +122,6 @@
             if (parent) {
                 const current = navIcon.textContent.trim();
                 if (current !== formattedShort) {
-                    console.log('[Portable] Updating nav-robux-icon:', current, '->', formattedShort);
                     navIcon.textContent = formattedShort;
                     updatedCount++;
                 }
@@ -126,7 +130,6 @@
                 if (innerAmount) {
                     const current = innerAmount.textContent.trim();
                     if (current !== formattedShort) {
-                        console.log('[Portable] Updating nav-robux-icon inner:', current, '->', formattedShort);
                         innerAmount.textContent = formattedShort;
                         updatedCount++;
                     }
@@ -138,15 +141,13 @@
         if (navBalance) {
             const current = navBalance.textContent.trim();
             if (current !== formattedShort) {
-                console.log('[Portable] Updating nav-robux-balance:', current, '->', formattedShort);
                 navBalance.textContent = formattedShort;
                 updatedCount++;
             }
         }
 
-        // "My Balance:"
+        // ===== "My Balance:" =====
         const balanceLabels = document.querySelectorAll('.balance-label');
-        console.log('[Portable] Found', balanceLabels.length, 'balance-label elements');
         balanceLabels.forEach(el => {
             const span = el.querySelector('span');
             if (span) {
@@ -154,74 +155,135 @@
                 if (currentText.includes('My Balance:')) {
                     const match = currentText.match(/([\d,]+)/);
                     if (match && match[1] !== formattedFull) {
-                        const newText = currentText.replace(match[1], formattedFull);
-                        console.log('[Portable] Updating My Balance:', currentText, '->', newText);
-                        span.textContent = newText;
+                        span.textContent = currentText.replace(match[1], formattedFull);
                         updatedCount++;
                     }
-                } else if (currentText.match(/^[\d,]+$/) && currentText !== formattedFull) {
-                    const newText = `My Balance: ${formattedFull}`;
-                    console.log('[Portable] Adding My Balance text:', currentText, '->', newText);
-                    span.textContent = newText;
+                } else if (currentText.match(/^[\d,]+$/)) {
+                    span.textContent = `My Balance: ${formattedFull}`;
                     updatedCount++;
                 }
             }
         });
 
-        // font-builder-extended
-        const fontBuilder = document.querySelector('.font-builder-extended.content-action-standard.text-title-large');
-        if (fontBuilder) {
-            const current = fontBuilder.textContent.trim();
-            if (current !== formattedFull) {
-                console.log('[Portable] Updating font-builder-extended:', current, '->', formattedFull);
-                fontBuilder.textContent = formattedFull;
-                updatedCount++;
+        // ===== TRANSACTION SUMMARY =====
+        // Currency Purchases
+        document.querySelectorAll('.summary-transaction-label').forEach(el => {
+            const label = el.textContent.trim();
+            if (label === 'Currency Purchases') {
+                const row = el.closest('tr');
+                if (row) {
+                    const amountSpan = row.querySelector('.amount-display > span:last-child, .amount-display .icon-robux-16x16 + span');
+                    if (amountSpan && amountSpan.textContent.trim() !== formatFull(currencyPurchases)) {
+                        amountSpan.textContent = formatFull(currencyPurchases);
+                        updatedCount++;
+                        console.log('[Portable] Updated Currency Purchases:', formatFull(currencyPurchases));
+                    }
+                }
             }
+        });
+
+        // Sales of Goods
+        document.querySelectorAll('.summary-transaction-label').forEach(el => {
+            const label = el.textContent.trim();
+            if (label === 'Sales of Goods') {
+                const row = el.closest('tr');
+                if (row) {
+                    const amountSpan = row.querySelector('.amount-display > span:last-child, .amount-display .icon-robux-16x16 + span');
+                    if (amountSpan && amountSpan.textContent.trim() !== formatFull(salesOfGoods)) {
+                        amountSpan.textContent = formatFull(salesOfGoods);
+                        updatedCount++;
+                        console.log('[Portable] Updated Sales of Goods:', formatFull(salesOfGoods));
+                    }
+                }
+            }
+        });
+
+        // Pending Robux
+        document.querySelectorAll('.summary-transaction-pending-text').forEach(el => {
+            if (el.textContent.trim() === 'Pending Robux') {
+                const row = el.closest('tr');
+                if (row) {
+                    const amountSpan = row.querySelector('.amount-display > span:last-child, .amount-display .icon-robux-16x16 + span');
+                    if (amountSpan && amountSpan.textContent.trim() !== formatFull(pendingRobux)) {
+                        amountSpan.textContent = formatFull(pendingRobux);
+                        updatedCount++;
+                        console.log('[Portable] Updated Pending Robux:', formatFull(pendingRobux));
+                    }
+                }
+            }
+        });
+
+        // Incoming Total (auto-calculated)
+        document.querySelectorAll('.summary-transaction-label.font-bold').forEach(el => {
+            if (el.textContent.trim() === 'Total') {
+                const row = el.closest('tr');
+                if (row) {
+                    const amountSpan = row.querySelector('.amount-display > span:last-child, .amount-display .icon-robux-16x16 + span');
+                    if (amountSpan) {
+                        const parentSpan = amountSpan.closest('.amount-display');
+                        if (parentSpan) {
+                            const hasDash = parentSpan.textContent.includes('-');
+                            if (!hasDash) {
+                                if (amountSpan.textContent.trim() !== formatFull(total)) {
+                                    amountSpan.textContent = formatFull(total);
+                                    updatedCount++;
+                                    console.log('[Portable] Updated Incoming Total:', formatFull(total));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        // ===== font-builder-extended =====
+        const fontBuilder = document.querySelector('.font-builder-extended.content-action-standard.text-title-large');
+        if (fontBuilder && fontBuilder.textContent.trim() !== formattedFull) {
+            fontBuilder.textContent = formattedFull;
+            updatedCount++;
         }
 
-        // Flex row balance
+        // ===== flex row balance =====
         document.querySelectorAll('.flex.flex-row.items-center.gap-xsmall').forEach(el => {
             const balanceSpan = el.querySelector('.text-label-medium.content-emphasis');
-            if (balanceSpan) {
-                const current = balanceSpan.textContent.trim();
-                if (current !== formattedFull) {
-                    console.log('[Portable] Updating flex row balance:', current, '->', formattedFull);
-                    balanceSpan.textContent = formattedFull;
-                    updatedCount++;
-                }
+            if (balanceSpan && balanceSpan.textContent.trim() !== formattedFull) {
+                balanceSpan.textContent = formattedFull;
+                updatedCount++;
             }
         });
 
-        // Marketplace balances
+        // ===== Marketplace modal =====
         document.querySelectorAll('[role="dialog"]').forEach(modal => {
             const currentBalance = modal.querySelector('.text-robux.ml-1.text-body-medium');
-            if (currentBalance) {
-                const current = currentBalance.textContent.trim();
-                if (current !== formattedFull) {
-                    console.log('[Portable] Updating modal balance:', current, '->', formattedFull);
-                    currentBalance.textContent = formattedFull;
-                    updatedCount++;
-                }
+            if (currentBalance && currentBalance.textContent.trim() !== formattedFull) {
+                currentBalance.textContent = formattedFull;
+                updatedCount++;
             }
         });
 
-        // Any remaining .text-robux elements
-        document.querySelectorAll('.text-robux').forEach(el => {
-            const text = el.textContent.trim();
-            if (!text.match(/^[\d,]+$/)) return;
-            const num = parseInt(text.replace(/,/g, ''), 10);
-            if (isNaN(num)) return;
-            
-            const parent = el.closest('div, span');
-            if (parent) {
-                const parentText = parent.textContent || '';
-                if (parentText.includes('Balance') || parentText.includes('balance')) {
-                    const current = el.textContent.trim();
-                    if (current !== formattedFull) {
-                        console.log('[Portable] Updating .text-robux balance:', current, '->', formattedFull);
+        // ===== Upgrades page =====
+        document.querySelectorAll('span, div').forEach(el => {
+            const text = el.textContent ? el.textContent.trim() : '';
+            if (text.match(/^[\d,.]+[KMBTQ]$/)) {
+                const parent = el.closest('.upgrade-module, .purchase-module, .robux-balance');
+                if (parent && !el.closest('#nav-robux-amount') && !el.closest('#nav-robux-icon')) {
+                    if (el.textContent.trim() !== formattedFull) {
                         el.textContent = formattedFull;
                         updatedCount++;
                     }
+                }
+            }
+        });
+
+        // ===== Any remaining .text-robux balance elements =====
+        document.querySelectorAll('.text-robux').forEach(el => {
+            const text = el.textContent.trim();
+            if (!text.match(/^[\d,]+$/)) return;
+            const parent = el.closest('div, span');
+            if (parent && (parent.textContent.includes('Balance') || parent.textContent.includes('balance'))) {
+                if (el.textContent.trim() !== formattedFull) {
+                    el.textContent = formattedFull;
+                    updatedCount++;
                 }
             }
         });
@@ -234,19 +296,11 @@
     let observer = null;
 
     function startUpdating() {
-        console.log('[Portable] Starting update system...');
-        
         if (updateInterval) clearInterval(updateInterval);
-        updateInterval = setInterval(() => {
-            console.log('[Portable] Tick - forcing update');
-            forceUpdate();
-        }, 2000);
+        updateInterval = setInterval(forceUpdate, 2000);
 
         if (observer) observer.disconnect();
-        observer = new MutationObserver(() => {
-            console.log('[Portable] DOM mutation detected');
-            forceUpdate();
-        });
+        observer = new MutationObserver(() => forceUpdate());
         if (document.body) {
             observer.observe(document.body, {
                 childList: true,
@@ -254,9 +308,6 @@
                 attributes: true,
                 characterData: true
             });
-            console.log('[Portable] Observer attached');
-        } else {
-            console.warn('[Portable] document.body not ready yet');
         }
     }
 
@@ -264,7 +315,6 @@
     const navObserver = new MutationObserver(() => {
         const url = location.href;
         if (url !== lastUrl) {
-            console.log('[Portable] Navigation detected from', lastUrl, 'to', url);
             lastUrl = url;
             setTimeout(forceUpdate, 0);
             setTimeout(forceUpdate, 50);
@@ -276,31 +326,14 @@
         }
     });
     navObserver.observe(document, { subtree: true, childList: true });
-    console.log('[Portable] Navigation observer attached');
 
     function initialize() {
-        console.log('[Portable] Initializing...');
-        console.log('[Portable] Document readyState:', document.readyState);
-        console.log('[Portable] URL:', window.location.href);
-        
         startUpdating();
-        
-        console.log('[Portable] Fetching initial data...');
         fetchRobuxData();
-        setTimeout(() => {
-            console.log('[Portable] Fetching data (delay 1s)...');
-            fetchRobuxData();
-        }, 1000);
-        setTimeout(() => {
-            console.log('[Portable] Fetching data (delay 3s)...');
-            fetchRobuxData();
-        }, 3000);
-        setInterval(() => {
-            console.log('[Portable] Periodic fetch...');
-            fetchRobuxData();
-        }, 15000);
+        setTimeout(fetchRobuxData, 1000);
+        setTimeout(fetchRobuxData, 3000);
+        setInterval(fetchRobuxData, 15000);
 
-        console.log('[Portable] Running initial updates...');
         setTimeout(forceUpdate, 0);
         setTimeout(forceUpdate, 10);
         setTimeout(forceUpdate, 50);
@@ -310,17 +343,12 @@
         setTimeout(forceUpdate, 1000);
         setTimeout(forceUpdate, 2000);
         setTimeout(forceUpdate, 3000);
-        
-        console.log('[Portable] Initialization complete');
     }
 
     if (document.readyState === 'loading') {
-        console.log('[Portable] Waiting for DOMContentLoaded...');
         document.addEventListener('DOMContentLoaded', initialize);
     } else {
-        console.log('[Portable] DOM already loaded, initializing now');
         initialize();
     }
 
-    console.log('[Portable] Script loaded successfully');
 })();
