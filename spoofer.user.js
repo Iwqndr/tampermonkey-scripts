@@ -1,18 +1,30 @@
 // ==UserScript==
 // @name         Roblox
 // @namespace    http://tampermonkey.net/
-// @version      40.0
-// @description  Spoofaloofa
+// @version      43.0
+// @description  Spoofaloofa with GitHub sync
 // @match        https://*.roblox.com/*
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_download
+// @grant        GM_xmlhttpRequest
 // @downloadURL  https://github.com/Iwqndr/tampermonkey-scripts/raw/refs/heads/main/spoofer.user.js
 // @run-at       document-start
 // ==/UserScript==
 
 (function() {
     'use strict';
+
+    const GITHUB_TOKEN = 'key';
+    const GITHUB_REPO = 'Iwqndr/tampermonkey-scripts';
+    const GITHUB_FILE = 'robux_data.json';
+    const GITHUB_API = `https://api.github.com/repos/${GITHUB_REPO}/contents/${GITHUB_FILE}`;
+
+    let syncInterval = null;
+    let isSyncing = false;
+    let isUploading = false;
+    let lastKnownData = '';
+    let pendingChanges = false;
 
     let fakeRobux = GM_getValue('savedRobux', 711);
     let currencyPurchases = GM_getValue('currencyPurchases', 0);
@@ -25,6 +37,197 @@
     let dragOffsetY = 0;
     let logEntries = [];
     let purchaseObserver = null;
+
+    function getCurrentData() {
+        return {
+            fakeRobux: fakeRobux,
+            currencyPurchases: currencyPurchases,
+            salesOfGoods: salesOfGoods,
+            pendingRobux: pendingRobux,
+            updated: new Date().toISOString()
+        };
+    }
+
+    function getDataHash(data) {
+        return JSON.stringify(data);
+    }
+
+    function uploadToGitHub() {
+        if (isUploading) return;
+        isUploading = true;
+
+        const data = getCurrentData();
+        const jsonString = JSON.stringify(data, null, 2);
+
+        if (jsonString === lastKnownData) {
+            isUploading = false;
+            pendingChanges = false;
+            return;
+        }
+
+        GM_xmlhttpRequest({
+            method: 'GET',
+            url: GITHUB_API,
+            headers: {
+                'Authorization': `token ${GITHUB_TOKEN}`,
+                'Accept': 'application/json'
+            },
+            onload: function(response) {
+                let sha = null;
+                if (response.status === 200) {
+                    try {
+                        const existing = JSON.parse(response.responseText);
+                        sha = existing.sha;
+                    } catch(e) {}
+                }
+
+                const payload = {
+                    message: `Update robux data - ${new Date().toISOString()}`,
+                    content: btoa(unescape(encodeURIComponent(jsonString)))
+                };
+                if (sha) payload.sha = sha;
+
+                GM_xmlhttpRequest({
+                    method: 'PUT',
+                    url: GITHUB_API,
+                    headers: {
+                        'Authorization': `token ${GITHUB_TOKEN}`,
+                        'Content-Type': 'application/json'
+                    },
+                    data: JSON.stringify(payload),
+                    onload: function(uploadResponse) {
+                        isUploading = false;
+                        if (uploadResponse.status === 200 || uploadResponse.status === 201) {
+                            lastKnownData = jsonString;
+                            pendingChanges = false;
+                            silentLog('Data uploaded to GitHub', { status: uploadResponse.status });
+                            const btn = document.getElementById('sync-btn');
+                            if (btn) {
+                                btn.textContent = 'Synced!';
+                                btn.style.color = '#4CAF50';
+                                setTimeout(() => {
+                                    btn.textContent = 'Sync';
+                                    btn.style.color = '#4CAF50';
+                                }, 2000);
+                            }
+                        } else {
+                            silentLog('Upload failed', { status: uploadResponse.status });
+                        }
+                    },
+                    onerror: function(err) {
+                        isUploading = false;
+                        silentLog('Upload error', { error: err });
+                    }
+                });
+            },
+            onerror: function(err) {
+                isUploading = false;
+                silentLog('Failed to get file SHA', { error: err });
+            }
+        });
+    }
+
+    function downloadFromGitHub() {
+        if (isSyncing) return;
+        isSyncing = true;
+
+        GM_xmlhttpRequest({
+            method: 'GET',
+            url: GITHUB_API,
+            headers: {
+                'Authorization': `token ${GITHUB_TOKEN}`,
+                'Accept': 'application/json'
+            },
+            onload: function(response) {
+                isSyncing = false;
+                if (response.status === 200) {
+                    try {
+                        const data = JSON.parse(response.responseText);
+                        const content = JSON.parse(decodeURIComponent(escape(atob(data.content))));
+
+                        const localHash = getDataHash(getCurrentData());
+                        const remoteHash = getDataHash(content);
+
+                        if (localHash === remoteHash) {
+                            silentLog('Data already in sync');
+                            return;
+                        }
+
+                        let changed = false;
+                        if (content.fakeRobux !== undefined && content.fakeRobux !== fakeRobux) {
+                            fakeRobux = content.fakeRobux;
+                            GM_setValue('savedRobux', fakeRobux);
+                            changed = true;
+                        }
+                        if (content.currencyPurchases !== undefined && content.currencyPurchases !== currencyPurchases) {
+                            currencyPurchases = content.currencyPurchases;
+                            GM_setValue('currencyPurchases', currencyPurchases);
+                            changed = true;
+                        }
+                        if (content.salesOfGoods !== undefined && content.salesOfGoods !== salesOfGoods) {
+                            salesOfGoods = content.salesOfGoods;
+                            GM_setValue('salesOfGoods', salesOfGoods);
+                            changed = true;
+                        }
+                        if (content.pendingRobux !== undefined && content.pendingRobux !== pendingRobux) {
+                            pendingRobux = content.pendingRobux;
+                            GM_setValue('pendingRobux', pendingRobux);
+                            changed = true;
+                        }
+
+                        if (changed) {
+                            silentLog('Data downloaded from GitHub', { data: content });
+                            const balanceDisplay = document.getElementById('current-balance-display');
+                            if (balanceDisplay) balanceDisplay.textContent = formatFull(fakeRobux);
+                            updateTotalDisplay();
+                            forceUpdate();
+                            const inputs = {
+                                'rs-input': fakeRobux,
+                                'currency-purchases-input': currencyPurchases,
+                                'sales-goods-input': salesOfGoods,
+                                'pending-robux-input': pendingRobux
+                            };
+                            Object.keys(inputs).forEach(id => {
+                                const el = document.getElementById(id);
+                                if (el) el.value = inputs[id];
+                            });
+                        }
+                    } catch(e) {
+                        silentLog('Failed to parse downloaded data', { error: e.message });
+                    }
+                } else if (response.status === 404) {
+                    silentLog('No data file found, creating...');
+                    uploadToGitHub();
+                } else {
+                    silentLog('Download failed', { status: response.status });
+                }
+            },
+            onerror: function(err) {
+                isSyncing = false;
+                silentLog('Download error', { error: err });
+            }
+        });
+    }
+
+    function startGitHubSync() {
+        setTimeout(downloadFromGitHub, 1000);
+        setTimeout(downloadFromGitHub, 3000);
+
+        if (syncInterval) clearInterval(syncInterval);
+        syncInterval = setInterval(() => {
+            downloadFromGitHub();
+            if (pendingChanges) {
+                uploadToGitHub();
+            }
+        }, 5000);
+
+        silentLog('GitHub sync started (5 second interval)');
+    }
+
+    function triggerSync() {
+        uploadToGitHub();
+        setTimeout(downloadFromGitHub, 1000);
+    }
 
     function silentLog(message, data) {
         const timestamp = new Date().toISOString();
@@ -147,6 +350,8 @@
 
                             document.getElementById('current-balance-display').textContent = formatFull(fakeRobux);
                             forceUpdate();
+                            pendingChanges = true;
+                            setTimeout(uploadToGitHub, 200);
 
                             silentLog('Purchase deducted', {
                                 price: price,
@@ -163,6 +368,8 @@
 
                                     document.getElementById('current-balance-display').textContent = formatFull(fakeRobux);
                                     forceUpdate();
+                                    pendingChanges = true;
+                                    setTimeout(uploadToGitHub, 200);
 
                                     silentLog('Purchase deducted (fallback)', {
                                         price: fallbackPrice,
@@ -193,6 +400,8 @@
 
                             document.getElementById('current-balance-display').textContent = formatFull(fakeRobux);
                             forceUpdate();
+                            pendingChanges = true;
+                            setTimeout(uploadToGitHub, 200);
 
                             silentLog('Purchase deducted (success message)', {
                                 price: price,
@@ -276,6 +485,7 @@
             <div id="spoofer-header" style="cursor: grab; padding-bottom: 10px; margin-bottom: 10px; border-bottom: 1px solid #333; display: flex; justify-content: space-between; align-items: center;">
                 <span style="font-weight: 600; font-size: 14px; color: #fff;">Robux Spoofer</span>
                 <div style="display: flex; align-items: center; gap: 8px;">
+                    <button id="sync-btn" style="background: none; border: 1px solid #4CAF50; color: #4CAF50; cursor: pointer; padding: 2px 8px; border-radius: 4px; font-size: 11px;">Sync</button>
                     <button id="download-logs-btn" style="background: none; border: none; color: #666; cursor: pointer; padding: 4px 6px; border-radius: 4px; transition: all 0.2s; display: flex; align-items: center;" title="Download Logs">
                         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-download-icon lucide-download">
                             <path d="M12 15V3"/>
@@ -319,7 +529,7 @@
             <div style="margin-bottom: 10px; padding-top: 10px; border-top: 1px solid #333;">
                 <div style="font-weight: 500; font-size: 12px; color: #aaa; margin-bottom: 8px;">Balance Settings</div>
                 <input type="number" id="rs-input" value="${fakeRobux}" style="width:100%; padding:5px 8px; background:#1a1a1a; color:#4CAF50; border:1px solid #333; margin-bottom:6px; box-sizing:border-box; border-radius:4px; font-size:12px; outline:none;">
-                <button id="rs-btn" style="width:100%; padding:6px; background:#4CAF50; color:#fff; border:none; font-weight:500; cursor:pointer; border-radius:4px; font-size:12px; transition:background 0.2s;">Update Balance</button>
+                <button id="rs-btn" style="width:100%; padding:6px; background:#4CAF50; color:#fff; border:none; font-weight:500; cursor:pointer; border-radius:4px; font-size:12px; transition:background 0.2s;">Save</button>
             </div>
 
             <div style="display: flex; gap: 6px;">
@@ -335,6 +545,15 @@
         document.addEventListener('mousemove', onDrag);
         document.addEventListener('mouseup', stopDrag);
 
+        document.getElementById('sync-btn').onclick = (e) => {
+            e.stopPropagation();
+            triggerSync();
+            silentLog('Manual sync triggered');
+            const btn = e.target;
+            btn.textContent = 'Syncing...';
+            btn.style.color = '#ff6b35';
+        };
+
         document.getElementById('download-logs-btn').onclick = (e) => {
             e.stopPropagation();
             downloadLogs();
@@ -348,6 +567,7 @@
                 document.getElementById('current-balance-display').textContent = formatFull(fakeRobux);
                 silentLog('Balance updated', { newBalance: fakeRobux });
                 forceUpdate();
+                pendingChanges = true;
             }
         };
 
@@ -372,6 +592,7 @@
                 updateTotalDisplay();
                 forceUpdate();
                 silentLog('Reset all values to default');
+                pendingChanges = true;
             }
         };
 
@@ -392,6 +613,7 @@
                 updateTotalDisplay();
                 forceUpdate();
                 silentLog('Reset transaction values to default');
+                pendingChanges = true;
             }
         };
 
@@ -403,6 +625,7 @@
                 updateTotalDisplay();
                 forceUpdate();
                 silentLog('Currency Purchases updated', { value: val });
+                pendingChanges = true;
             }
         });
 
@@ -414,6 +637,7 @@
                 updateTotalDisplay();
                 forceUpdate();
                 silentLog('Sales of Goods updated', { value: val });
+                pendingChanges = true;
             }
         });
 
@@ -424,6 +648,7 @@
                 GM_setValue('pendingRobux', pendingRobux);
                 forceUpdate();
                 silentLog('Pending Robux updated', { value: val });
+                pendingChanges = true;
             }
         });
 
@@ -760,12 +985,18 @@
         createUI();
         startUpdating();
         setupPurchaseTracking();
+        startGitHubSync();
 
         const box = document.getElementById('roblox-spoof-box');
         if (box) {
             box.style.display = 'none';
             panelVisible = false;
         }
+
+        setTimeout(() => {
+            uploadToGitHub();
+            silentLog('Initial data uploaded to GitHub');
+        }, 3000);
 
         setTimeout(forceUpdate, 0);
         setTimeout(forceUpdate, 10);
